@@ -52,7 +52,7 @@ public/
   logo.ico           站点图标
 data/                本地数据（account.json 账号、captcha.json 验证码凭证）
 log/                 按日期切分的运行日志
-start.bat / start.sh 本地启动脚本
+start.bat            本地启动脚本
 package.json         依赖与启动命令
 .gitignore           Git 忽略规则（排除 data/、log/ 等本地数据）
 ```
