@@ -1,0 +1,35 @@
+# ---------- 敏感数据（绝对不要提交） ----------
+# 账号凭证：uid / username / token、验证码凭证等，仅保存在本机
+data/
+# 运行日志：可能包含接口地址、账号与请求信息
+log/
+# 环境变量
+.env
+.env.*
+# 部署脚本（含服务器 IP / 用户名，按需保留在本地）
+upload.bat
+
+# ---------- 依赖 ----------
+node_modules/
+
+# ---------- 日志与临时文件 ----------
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tmp
+*.temp
+
+# ---------- 测试 / 自动化产物 ----------
+.playwright-cli/
+screenshots/
+test-results/
+playwright-report/
+
+# ---------- 编辑器 / 系统文件 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

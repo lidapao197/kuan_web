@@ -1,0 +1,14 @@
+{
+  "name": "coolapk-web",
+  "version": "1.0.0",
+  "description": "网页版酷安：Node.js 后端（token 生成 + 代理）+ Web 前端",
+  "main": "server.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "express": "^4.19.0"
+  }
+}
