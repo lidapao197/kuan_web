@@ -7,6 +7,7 @@
   --blob-b: #ffe3a1;
   --bg: #f2f4f6;
   --card: rgba(255, 255, 255, 0.86);
+  --card-solid: rgba(255, 255, 255, 0.94);
   --glass: rgba(255, 255, 255, 0.55);
   --glass-strong: rgba(255, 255, 255, 0.72);
   --text: #222;
@@ -63,6 +64,7 @@
   --blob-a: #0d3b2f; --blob-b: #362a10;
   --bg: #14161a;
   --card: rgba(30, 33, 40, 0.9);
+  --card-solid: rgba(33, 36, 43, 0.97);
   --glass: rgba(24, 27, 33, 0.66);
   --glass-strong: rgba(29, 32, 39, 0.84);
   --text: #e7eaf0;
@@ -486,10 +488,9 @@ body {
   color: #fff; font-weight: 600;
 }
 
-/* 通用卡片 */
+/* 通用卡片：不做逐卡毛玻璃（长列表滚动时 GPU 开销大），改用接近不透明的底色 */
 .feed-card, .apk-card, .plain-card {
-  background: var(--card);
-  backdrop-filter: blur(10px);
+  background: var(--card-solid);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
   padding: 16px;
@@ -690,7 +691,7 @@ body {
 /* 数码产品卡片 */
 .product-card {
   display: flex; gap: 12px; align-items: center; cursor: pointer;
-  background: var(--card);
+  background: var(--card-solid);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
   padding: 14px 16px; margin-bottom: 12px;
@@ -719,7 +720,7 @@ body {
 /* 轮播 */
 .carousel {
   display: flex; gap: 10px; overflow-x: auto; scroll-snap-type: x mandatory;
-  margin-bottom: 12px; border-radius: var(--radius); background: var(--card);
+  margin-bottom: 12px; border-radius: var(--radius); background: var(--card-solid);
 }
 .carousel a { flex: 0 0 88%; scroll-snap-align: center; position: relative; }
 .carousel img { width: 100%; height: 170px; object-fit: cover; border-radius: var(--radius); }
@@ -751,7 +752,7 @@ body {
   gap: 10px; margin-bottom: 12px;
 }
 .grid .g-item {
-  background: var(--card); border-radius: var(--radius); padding: 14px 8px;
+  background: var(--card-solid); border-radius: var(--radius); padding: 14px 8px;
   text-align: center; cursor: pointer; font-size: 13px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }

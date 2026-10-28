@@ -96,6 +96,18 @@ const DEFAULT_DEVICE = buildDeviceProfile(null);
 const X_APP_DEVICE = DEFAULT_DEVICE.device;
 const DEFAULT_UA = DEFAULT_DEVICE.ua;
 
+// 同一台设备、同一秒内生成的 token 完全相同；缓存后避免每个请求都跑一次 bcrypt
+const tokenCache = new Map();
+function appToken(device) {
+  const sec = Math.floor(Date.now() / 1000);
+  const hit = tokenCache.get(device);
+  if (hit && hit.sec === sec) return hit.token;
+  const token = getTokenV3(device, sec);
+  if (tokenCache.size > 16) tokenCache.clear(); // 设备变体很少，防止无限增长
+  tokenCache.set(device, { sec, token });
+  return token;
+}
+
 function clientHeaders(acc) {
   // 配置了设备信息时完全模拟用户手机：device 与 token 绑定，UA 与 device 一致
   const profile = buildDeviceProfile(acc) || DEFAULT_DEVICE;
@@ -107,7 +119,7 @@ function clientHeaders(acc) {
     'X-Sdk-Int': (acc && acc.device) ? SDK_INT : profile.sdk,
     'X-Sdk-Locale': 'zh-CN',
     'X-App-Id': 'com.coolapk.market',
-    'X-App-Token': getTokenV3(device),
+    'X-App-Token': appToken(device),
     'X-App-Version': VERSION_NAME,
     'X-App-Code': VERSION_CODE,
     'X-Api-Version': API_VERSION,
@@ -121,13 +133,36 @@ function clientHeaders(acc) {
 
 const app = express();
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public'), { etag: true, lastModified: true, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
+app.use(express.static(path.join(__dirname, 'public'), {
+  etag: true,
+  lastModified: true,
+  setHeaders: (res, filePath) => {
+    // 表情图与图标不会变，长缓存；其余静态资源保持协商缓存，改完刷新即生效
+    const immutable = /[\\/]emotions[\\/]/.test(filePath) || /[\\/]logo\.ico$/.test(filePath);
+    res.setHeader('Cache-Control', immutable ? 'public, max-age=604800, immutable' : 'no-cache');
+  },
+}));
 
 // ---------- 账号配置（本地文件存储，用于解除评论等接口的匿名风控） ----------
 const ACCOUNT_FILE = path.join(DATA_DIR, 'account.json');
+// 账号文件按 mtime 缓存：每个 API 请求都要读，避免每次都做同步读盘 + JSON.parse
+let accountCache = { mtime: -1, data: null };
 function readAccount() {
-  try { return JSON.parse(fs.readFileSync(ACCOUNT_FILE, 'utf8')); }
-  catch { return null; }
+  try {
+    const st = fs.statSync(ACCOUNT_FILE);
+    if (accountCache.mtime === st.mtimeMs) return accountCache.data;
+    const data = JSON.parse(fs.readFileSync(ACCOUNT_FILE, 'utf8'));
+    accountCache = { mtime: st.mtimeMs, data };
+    return data;
+  } catch {
+    accountCache = { mtime: -1, data: null };
+    return null;
+  }
+}
+/** 写账号配置并立即失效内存缓存（避免同一毫秒内 mtime 未变导致读到旧值） */
+function writeAccount(data) {
+  fs.writeFileSync(ACCOUNT_FILE, JSON.stringify(data, null, 2));
+  accountCache = { mtime: -1, data: null };
 }
 
 app.get('/account', (req, res) => {
@@ -166,13 +201,14 @@ app.post('/account', (req, res) => {
   if (!merged.uid || !merged.token) {
     return res.status(400).json({ error: 'uid 和 token 不能为空' });
   }
-  fs.writeFileSync(ACCOUNT_FILE, JSON.stringify(merged, null, 2));
+  writeAccount(merged);
   logger.info('account_saved', { uid: merged.uid, deviceModel: merged.deviceModel || '' });
   res.json({ ok: true });
 });
 
 app.delete('/account', (req, res) => {
   try { fs.unlinkSync(ACCOUNT_FILE); } catch { /* 文件不存在也算成功 */ }
+  accountCache = { mtime: -1, data: null };
   logger.info('account_cleared');
   res.json({ ok: true });
 });
@@ -393,14 +429,14 @@ app.use('/auth', async (req, res) => {
       const token = pickCookie(sc, 'token').slice(6);
       if (uid && token) {
         const old = readAccount() || {};
-        fs.writeFileSync(ACCOUNT_FILE, JSON.stringify({
+        writeAccount({
           uid,
           username: decodeURIComponent(rawUsername || old.username || ''),
           token,
           device: '',   // 新 token 与本机生成的设备配套
           ua: '',
           deviceModel: old.deviceModel || '',
-        }, null, 2));
+        });
         logger.info('login_success', { uid, username: decodeURIComponent(rawUsername || '') });
       } else {
         try {
@@ -467,6 +503,7 @@ function makeProxy(host) {
         body: hasBody ? req : undefined,
         duplex: 'half',
         redirect: 'follow',
+        signal: AbortSignal.timeout(15000), // 上游卡死时不要一直挂住前端
       });
       absorbCookies(upstream);
       const body = await upstream.text();
@@ -498,9 +535,13 @@ function makeProxy(host) {
       res.status(upstream.status).type(upstream.headers.get('content-type') || 'application/json');
       res.send(body);
     } catch (err) {
+      const timedOut = err.name === 'TimeoutError' || err.name === 'AbortError';
       console.error('[api]', target, err.message);
-      logger.error('api_request_failed', { url: target, error: err.message });
-      res.status(502).json({ error: '上游请求失败', detail: err.message });
+      logger.error('api_request_failed', { url: target, error: err.message, timeout: timedOut });
+      res.status(timedOut ? 504 : 502).json({
+        error: timedOut ? '上游请求超时，请稍后重试' : '上游请求失败',
+        detail: err.message,
+      });
     }
   };
 }
@@ -508,26 +549,43 @@ app.use('/api2', makeProxy(API2_HOST));
 app.use('/api', makeProxy(API_HOST));
 
 // ---------- 图床代理（防盗链：带 Referer 回源） ----------
+/** 只允许公网目标，避免图床代理被当成访问本机/内网的跳板 */
+function isPrivateHost(hostname) {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h === '0.0.0.0' || h === '::1') return true;
+  if (/^127\./.test(h) || /^10\./.test(h) || /^192\.168\./.test(h) || /^169\.254\./.test(h)) return true;
+  const m = h.match(/^172\.(\d+)\./);
+  if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+  if (/^f[cd][0-9a-f]{2}:/i.test(h)) return true; // fc00::/7
+  return false;
+}
+
 app.get('/image', async (req, res) => {
-  const url = String(req.query.url || '');
-  if (!/^https?:\/\//.test(url)) return res.status(400).end();
+  const raw = String(req.query.url || '');
+  let target;
+  try { target = new URL(raw); } catch { return res.status(400).end(); }
+  if (!/^https?:$/.test(target.protocol) || isPrivateHost(target.hostname)) {
+    return res.status(400).end();
+  }
   try {
-    const upstream = await fetch(url, {
+    const upstream = await fetch(target, {
       headers: {
         'User-Agent':
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36',
         Referer: 'https://www.coolapk.com/',
         Accept: 'image/*,*/*;q=0.8',
       },
+      signal: AbortSignal.timeout(15000),
     });
-    res.status(upstream.status);
+    if (!upstream.ok) return res.status(upstream.status).end();
     res.setHeader('content-type', upstream.headers.get('content-type') || 'image/jpeg');
     res.setHeader('cache-control', 'public, max-age=86400');
     const buf = Buffer.from(await upstream.arrayBuffer());
     res.send(buf);
   } catch (err) {
-    console.error('[image]', url, err.message);
-    res.status(502).end();
+    const timedOut = err.name === 'TimeoutError' || err.name === 'AbortError';
+    console.error('[image]', raw, err.message);
+    res.status(timedOut ? 504 : 502).end();
   }
 });
 

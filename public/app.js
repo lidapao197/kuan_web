@@ -1951,6 +1951,10 @@ function closeModal() {
   document.body.style.overflow = '';
   closeLoginFrame(); // 关闭弹窗时一并停掉登录轮询/iframe，避免定时器泄漏
 }
+// Esc 关闭弹窗（与灯箱、主题面板的行为保持一致）
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#modal').hidden) closeModal();
+});
 /* ---------- 状态栏 / 分页 ---------- */
 
 function setStatus(text, cls, onClick) {
