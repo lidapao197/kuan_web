@@ -155,7 +155,18 @@ body {
 }
 .sidebar-foot {
   margin-top: auto;
-  display: flex; flex-direction: column;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.side-btn {
+  width: 100%; border: 1px solid var(--line); background: var(--btn-bg);
+  color: var(--btn-plain); font-size: 13px;
+  padding: 8px; border-radius: 10px; cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.side-btn:hover {
+  background: rgba(var(--brand-rgb), 0.1);
+  border-color: rgba(var(--brand-rgb), 0.35);
+  color: var(--brand-dark);
 }
 #account-btn {
   display: flex; align-items: center; gap: 9px;
@@ -206,6 +217,56 @@ body {
 .account-status {
   font-size: 12px; padding: 8px 12px; border-radius: 10px;
   background: rgba(var(--brand-rgb), 0.1); color: var(--brand-dark);
+}
+.account-session { display: flex; gap: 8px; align-items: stretch; }
+.account-session .account-status { flex: 1; min-width: 0; }
+#account-logout {
+  width: auto; flex-shrink: 0; padding: 8px 12px;
+  color: #d03050; font-weight: 600;
+}
+#account-logout:hover {
+  color: #d03050;
+  background: rgba(208, 48, 80, 0.08);
+  border-color: rgba(208, 48, 80, 0.35);
+}
+.recent-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+.recent-section h3 { font-size: 15px; margin-bottom: 8px; }
+.recent-list { display: flex; flex-direction: column; gap: 6px; }
+.recent-account {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; text-align: left;
+  border: 1px solid var(--line); background: var(--btn-bg);
+  border-radius: 10px; padding: 7px 10px; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.recent-account:hover:not(:disabled) {
+  background: rgba(var(--brand-rgb), 0.08);
+  border-color: rgba(var(--brand-rgb), 0.35);
+}
+.recent-account:disabled { cursor: default; }
+.recent-account.active {
+  border-color: rgba(var(--brand-rgb), 0.4);
+  background: rgba(var(--brand-rgb), 0.08);
+}
+.recent-avatar {
+  width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(var(--brand-rgb), 0.14); color: var(--brand-dark);
+  font-size: 13px; font-weight: 600;
+}
+.recent-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.recent-name {
+  font-size: 13px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.recent-meta {
+  font-size: 11px; color: var(--text2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.recent-badge {
+  flex-shrink: 0; font-size: 11px;
+  color: var(--brand-dark); background: rgba(var(--brand-rgb), 0.12);
+  border-radius: 999px; padding: 2px 8px;
 }
 .login-section {
   margin-top: 18px; padding-top: 14px;
@@ -300,7 +361,6 @@ body {
   position: sticky; top: 0; z-index: 30;
   display: flex; align-items: center; justify-content: flex-end;
   margin: -8px -6px 6px;
-  padding-right: 48px;
   pointer-events: none; /* 空白区域不遮挡详情内容 */
 }
 #detail-topbar > * { pointer-events: auto; }
@@ -314,51 +374,14 @@ body {
 }
 #detail-close:hover { background: var(--bg); color: var(--text); }
 
-/* ---------- 整个页面右上角：主题色切换（固定于视口，不隶属任何一栏） ---------- */
-#theme-dock {
-  position: fixed; top: 14px; right: 14px; z-index: 45;
-}
-#theme-picker { position: relative; }
-#theme-btn {
-  width: 34px; height: 34px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid var(--app-border);
-  background: var(--glass-strong);
-  backdrop-filter: blur(14px) saturate(1.6);
-  -webkit-backdrop-filter: blur(14px) saturate(1.6);
-  color: var(--brand-dark); cursor: pointer;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
-  transition: background 0.15s, color 0.15s, transform 0.1s;
-}
-#theme-btn:hover {
-  background: rgba(var(--brand-rgb), 0.12);
-  border-color: rgba(var(--brand-rgb), 0.35);
-}
-#theme-btn:active { transform: scale(0.94); }
-#theme-btn svg { display: block; }
-
-#theme-menu {
-  position: absolute; top: calc(100% + 8px); right: 0; z-index: 31;
-  width: 204px; padding: 12px;
-  background: var(--glass-strong);
-  backdrop-filter: blur(22px) saturate(1.7);
-  -webkit-backdrop-filter: blur(22px) saturate(1.7);
-  border: 1px solid var(--glass-border);
-  border-radius: 14px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
-  animation: theme-pop 0.16s ease;
-}
-#theme-menu[hidden] { display: none; }
-@keyframes theme-pop {
-  from { opacity: 0; transform: translateY(-5px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.theme-menu-head {
+/* ---------- 设置弹窗 ---------- */
+.settings-section { margin-top: 18px; }
+.settings-head {
   display: flex; align-items: center; justify-content: space-between;
-  font-size: 12px; color: var(--text2); margin-bottom: 10px;
-  padding: 0 2px;
+  font-size: 15px; font-weight: 600; margin-bottom: 8px;
 }
-.theme-menu-head b { color: var(--brand-dark); font-weight: 600; }
+.settings-head b { color: var(--brand-dark); font-size: 13px; font-weight: 600; }
+.settings-section .theme-swatches { margin-top: 10px; }
 .theme-swatches { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .theme-swatch {
   height: 34px; border-radius: 10px; border: 0; cursor: pointer;
@@ -384,6 +407,7 @@ body {
   background: none; backdrop-filter: none;
 }
 #detail-content .feed-pics img { height: auto; max-height: 420px; object-fit: contain; background: #000; }
+#detail-content .feed-pics .pic-wrap.no-preview { min-height: 220px; }
 
 /* 右栏默认占位 */
 .detail-placeholder {
@@ -533,14 +557,20 @@ body {
   display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* “查看更多”叠在最后一行右侧，避免另起一行 */
+.feed-msg-wrap { position: relative; }
 .more-link {
-  font-size: 13px; color: var(--brand); cursor: pointer;
-  margin-top: 4px; display: inline-block;
+  position: absolute; right: 0; bottom: 0; z-index: 1;
+  font-size: 13px; line-height: 1.65; color: var(--brand);
+  cursor: pointer; white-space: nowrap;
+  padding-left: 22px;
+  background: linear-gradient(90deg, transparent, var(--card-solid) 38%);
 }
 .more-link:hover { text-decoration: underline; }
 
 /* 图片网格：最多 6 张，最后一张可带 +N 蒙层 */
-.feed-pics .pic-wrap { position: relative; }
+.feed-pics .pic-wrap { position: relative; overflow: hidden; border-radius: 10px; }
+.pic-wrap.no-preview { min-height: 150px; }
 .pic-more {
   position: absolute; inset: 0; border-radius: 10px;
   background: rgba(0, 0, 0, 0.5);
@@ -548,14 +578,43 @@ body {
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
 }
+/* 动图：列表/详情只显示静态首帧，右下角标记，点击灯箱播放 */
+.gif-badge {
+  position: absolute; right: 6px; bottom: 6px; z-index: 2;
+  padding: 1px 6px; border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.4px; pointer-events: none;
+}
+.thumb-wrap.no-preview::after,
+.pic-wrap.no-preview::after {
+  content: '▶';
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg); color: var(--text2); font-size: 22px;
+}
 /* 列表卡片：左文右图（缩略图固定尺寸，竖图不会被拉高） */
 .feed-row { display: flex; gap: 12px; align-items: center; }
 .feed-main { flex: 1; min-width: 0; }
-.feed-thumb {
-  width: 120px; height: 90px; flex-shrink: 0;
-  border-radius: 10px; object-fit: cover; background: var(--bg);
+.thumb-wrap {
+  position: relative; flex-shrink: 0;
+  width: 120px; height: 90px;
+  align-self: center;
+  border-radius: 10px; overflow: hidden;
+  background: var(--bg);
   cursor: pointer;
 }
+/* 竖图：高度跟随正文区域，上下对齐；短正文仍保持 90px */
+.thumb-wrap.portrait {
+  align-self: stretch;
+  height: auto;
+  min-height: 90px;
+}
+.feed-thumb {
+  display: block; width: 100%; height: 100%;
+  object-fit: cover;
+}
+.feed-thumb.broken { opacity: 0; }
 #detail-content .feed-row { display: block; }
 
 .feed-pics { margin-top: 10px; display: grid; gap: 6px; }
@@ -874,7 +933,8 @@ body {
   color: #08231a;
 }
 :root[data-theme="dark"] .status.error,
-:root[data-theme="dark"] .login-msg { color: #ff8195; }
+:root[data-theme="dark"] .login-msg,
+:root[data-theme="dark"] #account-logout { color: #ff8195; }
 :root[data-theme="dark"] .product-price { color: #ff8f79; }
 
 /* 窄屏：详情面板改为右侧覆盖层 */

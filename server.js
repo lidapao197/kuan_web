@@ -11,6 +11,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const { getTokenV3, encodeDevice } = require('./lib/token');
+const { generateDuid, validDuid: validGuestDuid } = require('./lib/shuzilm');
 const logger = require('./lib/logger');
 
 const PORT = process.env.PORT || 9002;
@@ -98,14 +99,91 @@ const DEFAULT_UA = DEFAULT_DEVICE.ua;
 
 // 同一台设备、同一秒内生成的 token 完全相同；缓存后避免每个请求都跑一次 bcrypt
 const tokenCache = new Map();
-function appToken(device) {
+function appToken(device, appCode = Number(VERSION_CODE)) {
   const sec = Math.floor(Date.now() / 1000);
-  const hit = tokenCache.get(device);
+  const key = device + '|' + appCode;
+  const hit = tokenCache.get(key);
   if (hit && hit.sec === sec) return hit.token;
-  const token = getTokenV3(device, sec);
-  if (tokenCache.size > 16) tokenCache.clear(); // 设备变体很少，防止无限增长
-  tokenCache.set(device, { sec, token });
+  const token = getTokenV3(device, sec, appCode);
+  if (tokenCache.size > 24) tokenCache.clear(); // 设备/版本变体很少，防止无限增长
+  tokenCache.set(key, { sec, token });
   return token;
+}
+
+// ---------- 游客设备身份（公开读接口用，避开登录设备触发的风控验证码） ----------
+const GUEST_FILE = path.join(DATA_DIR, 'guest.json');
+const GUEST_APP_VERSION = '16.6.5';
+const GUEST_APP_CODE = 2610162;
+const GUEST_SDK_INT = '36';
+const GUEST_MODEL = '23113RKC6C';
+const GUEST_BUILD = 'AQ3A.250226.002';
+const GUEST_UA = `Dalvik/2.1.0 (Linux; U; Android 16; ${GUEST_MODEL} Build/${GUEST_BUILD}) ` +
+  `(#Build; Redmi; ${GUEST_MODEL}; ${GUEST_BUILD}; 16) +CoolMarket/${GUEST_APP_VERSION}-${GUEST_APP_CODE}-universal`;
+
+let guestIdentity = null;   // { duid, deviceCode }
+let guestLoading = null;
+let guestFailedAt = 0;
+
+function buildGuestDeviceCode(duid) {
+  // 官方标准 9 段格式：{DUID}; ; ; ; 厂商; 品牌; 机型; Build; OAID
+  return encodeDevice(`${duid}; ; ; ; Xiaomi; Redmi; ${GUEST_MODEL}; ${GUEST_BUILD}; `);
+}
+
+function readGuestIdentity() {
+  if (guestIdentity) return guestIdentity;
+  try {
+    const saved = JSON.parse(fs.readFileSync(GUEST_FILE, 'utf8'));
+    if (validGuestDuid(saved.duid)) {
+      guestIdentity = { duid: saved.duid, deviceCode: buildGuestDeviceCode(saved.duid) };
+      return guestIdentity;
+    }
+  } catch { /* 首次使用 */ }
+  return null;
+}
+
+/** 懒加载游客 DUID：成功写入 data/guest.json，失败后 60 秒内不再重试 */
+async function ensureGuestIdentity() {
+  const cached = readGuestIdentity();
+  if (cached) return cached;
+  if (Date.now() - guestFailedAt < 60_000) return null;
+  if (!guestLoading) {
+    guestLoading = (async () => {
+      try {
+        const duid = await generateDuid();
+        if (!validGuestDuid(duid)) throw new Error('DUID 格式无效');
+        const identity = { duid, deviceCode: buildGuestDeviceCode(duid) };
+        guestIdentity = identity;
+        try { fs.writeFileSync(GUEST_FILE, JSON.stringify(identity, null, 2)); } catch { /* ignore */ }
+        return identity;
+      } catch (err) {
+        guestFailedAt = Date.now();
+        logger.warn('guest_identity_failed', { error: err.message });
+        return null;
+      } finally {
+        guestLoading = null;
+      }
+    })();
+  }
+  return guestLoading;
+}
+
+function guestHeaders(identity) {
+  return {
+    'User-Agent': GUEST_UA,
+    'X-Requested-With': 'XMLHttpRequest',
+    'X-Sdk-Int': GUEST_SDK_INT,
+    'X-Sdk-Locale': 'zh-CN',
+    'X-App-Id': 'com.coolapk.market',
+    'X-App-Token': appToken(identity.deviceCode, GUEST_APP_CODE),
+    'X-App-Version': GUEST_APP_VERSION,
+    'X-App-Code': String(GUEST_APP_CODE),
+    'X-Api-Version': API_VERSION,
+    'X-App-Device': identity.deviceCode,
+    'X-Dark-Mode': '0',
+    'X-App-Channel': 'coolapk',
+    'X-App-Mode': 'universal',
+    'X-App-Supported': String(GUEST_APP_CODE),
+  };
 }
 
 function clientHeaders(acc) {
@@ -165,6 +243,55 @@ function writeAccount(data) {
   accountCache = { mtime: -1, data: null };
 }
 
+// ---------- 最近登录账号（退出登录只清当前会话，账号仍留在列表里） ----------
+const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
+const RECENT_LIMIT = 8;
+
+function readRecentAccounts() {
+  try {
+    const j = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+    return Array.isArray(j.accounts) ? j.accounts : [];
+  } catch { return []; }
+}
+function writeRecentAccounts(list) {
+  try {
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify({ accounts: list }, null, 2));
+  } catch (err) {
+    logger.error('accounts_write_failed', { error: err.message });
+  }
+}
+/** 记住账号（不改变当前登录态）；touch=false 用于启动迁移，不刷新时间 */
+function rememberAccount(acc, touch = true) {
+  if (!acc || !acc.uid || !acc.token) return;
+  const list = readRecentAccounts();
+  const idx = list.findIndex(a => String(a.uid) === String(acc.uid));
+  const base = {
+    uid: String(acc.uid),
+    username: acc.username || '',
+    token: acc.token,
+    device: acc.device || '',
+    ua: acc.ua || '',
+    deviceModel: acc.deviceModel || '',
+  };
+  if (idx >= 0) {
+    const prev = list[idx] || {};
+    const same = ['username', 'token', 'device', 'ua', 'deviceModel']
+      .every(k => String(prev[k] || '') === String(base[k] || ''));
+    if (!touch && same) return;
+    list[idx] = { ...prev, ...base, lastUsedAt: touch ? Date.now() : (prev.lastUsedAt || Date.now()) };
+  } else {
+    list.unshift({ ...base, lastUsedAt: Date.now() });
+  }
+  list.sort((a, b) => (b.lastUsedAt || 0) - (a.lastUsedAt || 0));
+  writeRecentAccounts(list.slice(0, RECENT_LIMIT));
+}
+
+// 启动迁移：把旧的单账号配置补进最近登录
+try {
+  const active = readAccount();
+  if (active?.uid && active?.token) rememberAccount(active, false);
+} catch { /* ignore */ }
+
 app.get('/account', (req, res) => {
   const a = readAccount();
   if (!a || !a.uid || !a.token) return res.json({ configured: false, deviceModel: a?.deviceModel || '' });
@@ -202,15 +329,149 @@ app.post('/account', (req, res) => {
     return res.status(400).json({ error: 'uid 和 token 不能为空' });
   }
   writeAccount(merged);
-  logger.info('account_saved', { uid: merged.uid, deviceModel: merged.deviceModel || '' });
+  rememberAccount(merged);
   res.json({ ok: true });
 });
 
+/** 最近登录列表（不含 token，只用于切换账号） */
+app.get('/accounts', (req, res) => {
+  const active = readAccount();
+  const accounts = readRecentAccounts().map(a => ({
+    uid: a.uid,
+    username: a.username || '',
+    deviceModel: a.deviceModel || '',
+    lastUsedAt: a.lastUsedAt || 0,
+  }));
+  res.json({ activeUid: active?.uid || '', accounts });
+});
+
+/** 切换到最近登录里的某个账号（写入当前账号配置，不重新登录） */
+app.post('/accounts/activate', (req, res) => {
+  const uid = String(req.body?.uid || '').trim();
+  if (!uid) return res.status(400).json({ error: '缺少 uid' });
+  const entry = readRecentAccounts().find(a => String(a.uid) === uid);
+  if (!entry || !entry.token) return res.status(404).json({ error: '账号不存在或凭证已失效' });
+  const acc = {
+    uid: entry.uid,
+    username: entry.username || '',
+    token: entry.token,
+    device: entry.device || '',
+    ua: entry.ua || '',
+    deviceModel: entry.deviceModel || '',
+  };
+  writeAccount(acc);
+  rememberAccount(acc);
+  res.json({ ok: true, username: acc.username });
+});
+
+/** 退出登录：只移除当前会话，账号仍保留在最近登录列表 */
+app.post('/logout', (req, res) => {
+  const active = readAccount();
+  try { fs.unlinkSync(ACCOUNT_FILE); } catch { /* 未登录也算成功 */ }
+  accountCache = { mtime: -1, data: null };
+  res.json({ ok: true });
+});
+
+/** 删除当前账号：同时从最近登录列表移除 */
 app.delete('/account', (req, res) => {
+  const active = readAccount();
   try { fs.unlinkSync(ACCOUNT_FILE); } catch { /* 文件不存在也算成功 */ }
   accountCache = { mtime: -1, data: null };
-  logger.info('account_cleared');
+  if (active?.uid) {
+    writeRecentAccounts(readRecentAccounts().filter(a => String(a.uid) !== String(active.uid)));
+  }
   res.json({ ok: true });
+});
+
+// ---------- 本地关注（未登录时使用，登录后前端改走账号接口） ----------
+const FOLLOWS_FILE = path.join(DATA_DIR, 'follows.json');
+
+function readFollows() {
+  try {
+    const j = JSON.parse(fs.readFileSync(FOLLOWS_FILE, 'utf8'));
+    return {
+      topics: Array.isArray(j.topics) ? j.topics : [],
+      apks: Array.isArray(j.apks) ? j.apks : [],
+    };
+  } catch {
+    return { topics: [], apks: [] };
+  }
+}
+function writeFollows(data) {
+  fs.writeFileSync(FOLLOWS_FILE, JSON.stringify(data, null, 2));
+}
+function cleanLocalTopic(t) {
+  const title = String(t?.title || '').trim();
+  if (!title) return null;
+  return {
+    title,
+    description: String(t?.description || '').trim(),
+    logo: String(t?.logo || '').trim(),
+    follownum: t?.follownum,
+    commentnum: t?.commentnum,
+    hot_num: t?.hot_num,
+  };
+}
+function cleanLocalApk(a) {
+  const id = String(a?.id || '').trim();
+  const apkname = String(a?.apkname || a?.apkname2 || '').trim();
+  if (!id && !apkname) return null;
+  return {
+    id,
+    apkname,
+    title: String(a?.title || '').trim(),
+    logo: String(a?.logo || '').trim(),
+    apkversionname: String(a?.apkversionname || '').trim(),
+    apksize: String(a?.apksize || '').trim(),
+    downCount: a?.downCount,
+    commentnum: a?.commentnum,
+  };
+}
+
+app.get('/follows/topics', (req, res) => {
+  res.json({ data: readFollows().topics });
+});
+
+app.post('/follows/topic', (req, res) => {
+  const title = String(req.body?.title || '').trim();
+  if (!title) return res.status(400).json({ error: '缺少话题名' });
+  const follow = !!req.body?.follow;
+  const data = readFollows();
+  if (follow) {
+    const topic = cleanLocalTopic({ ...(req.body.topic || {}), title });
+    data.topics = topic ? [topic, ...data.topics.filter(x => x.title !== title)] : data.topics;
+  } else {
+    data.topics = data.topics.filter(x => x.title !== title);
+  }
+  try {
+    writeFollows(data);
+  } catch (err) {
+    logger.error('local_follow_write_failed', { error: err.message });
+    return res.status(500).json({ error: '本地关注保存失败' });
+  }
+  res.json({ data: data.topics, following: follow });
+});
+
+app.get('/follows/apks', (req, res) => {
+  res.json({ data: readFollows().apks });
+});
+
+app.post('/follows/apk', (req, res) => {
+  const app = cleanLocalApk(req.body?.app);
+  if (!app) return res.status(400).json({ error: '缺少应用信息' });
+  const follow = !!req.body?.follow;
+  const data = readFollows();
+  const same = x => (app.id && String(x.id) === app.id) || (app.apkname && String(x.apkname) === app.apkname);
+  data.apks = follow
+    ? [app, ...data.apks.filter(x => !same(x))]
+    : data.apks.filter(x => !same(x));
+  try {
+    writeFollows(data);
+  } catch (err) {
+    logger.error('local_follow_write_failed', { error: err.message });
+    return res.status(500).json({ error: '本地关注保存失败' });
+  }
+  res.json({ data: data.apks, following: follow });
 });
 
 // ---------- 网易易盾代理 ----------
@@ -242,17 +503,9 @@ app.use('/yd', async (req, res) => {
     res.status(upstream.status);
     res.setHeader('content-type', upstream.headers.get('content-type') || 'application/json');
     const buf = Buffer.from(await upstream.arrayBuffer());
-    // 易盾校验响应留痕（登录页滑块用；接口风控凭证由前端显式上报，不从这里取）
-    if (m[2].includes('/check') || m[2].includes('/verify')) {
-      const mv = buf.toString('utf8').match(/"validate":"([^"]{20,})"}/);
-      if (mv) {
-        logger.info('yd_validate_captured', { len: mv[1].length, forApi: false });
-      } else {
-        logger.warn('yd_check_response', { path: upstreamUrl.slice(0, 60), body: buf.toString('utf8').slice(0, 150) });
-      }
-    }
     res.send(buf);
   } catch (err) {
+    logger.error('yd_proxy_failed', { error: err.message });
     res.status(502).json({ error: err.message });
   }
 });
@@ -287,11 +540,6 @@ app.post('/captcha/validate', (req, res) => {
     capturedAt: Date.now(),
   };
   try { fs.writeFileSync(CAPTCHA_FILE, JSON.stringify(captchaProof)); } catch { /* ignore */ }
-  logger.info('captcha_validate_saved', {
-    len: v.length,
-    captchaId: captchaId.slice(0, 8),
-    mode: captchaProof.field || 'cookie',
-  });
   res.json({ ok: true });
 });
 
@@ -429,15 +677,16 @@ app.use('/auth', async (req, res) => {
       const token = pickCookie(sc, 'token').slice(6);
       if (uid && token) {
         const old = readAccount() || {};
-        writeAccount({
+        const acc = {
           uid,
           username: decodeURIComponent(rawUsername || old.username || ''),
           token,
           device: '',   // 新 token 与本机生成的设备配套
           ua: '',
           deviceModel: old.deviceModel || '',
-        });
-        logger.info('login_success', { uid, username: decodeURIComponent(rawUsername || '') });
+        };
+        writeAccount(acc);
+        rememberAccount(acc);
       } else {
         try {
           const j = JSON.parse(body);
@@ -470,20 +719,27 @@ function makeProxy(host) {
     let target = host + req.url;
     try {
       const acc = readAccount();
-      const headers = clientHeaders(acc);
-      // 登录 Cookie（uid/username/token）优先，其后是会话 Cookie 罐
+      // 评论列表是公开读接口：优先用游客设备身份且不带登录 Cookie，
+      // 避免登录设备被风控要求验证码（与 coolapk-desktop 的做法一致）。
+      const isPublicRead = req.method === 'GET' &&
+        /^\/v6\/feed\/(?:replyList|hotReplyList)(?:\?|$)/.test(req.url);
+      const guest = isPublicRead ? await ensureGuestIdentity() : null;
+      const headers = guest ? guestHeaders(guest) : clientHeaders(acc);
       const cookieParts = [];
-      if (acc?.uid && acc?.token) {
-        cookieParts.push(
-          `uid=${acc.uid}`,
-          `username=${encodeURIComponent(acc.username || '')}`,
-          `token=${acc.token}`
-        );
+      if (!guest) {
+        // 登录 Cookie（uid/username/token）优先，其后是会话 Cookie 罐
+        if (acc?.uid && acc?.token) {
+          cookieParts.push(
+            `uid=${acc.uid}`,
+            `username=${encodeURIComponent(acc.username || '')}`,
+            `token=${acc.token}`
+          );
+        }
+        const jar = cookieHeader();
+        if (jar) cookieParts.push(jar);
       }
-      const jar = cookieHeader();
-      if (jar) cookieParts.push(jar);
-      // 接口风控凭证：空 field 走 Cookie（validate=NEC:<id8>:<validate>），
-      // 非空 field 作为同名查询参数回传（协议与 c001apk 一致）
+      // 接口风控凭证（空 field 走 Cookie，非空 field 作为查询参数回传）：
+      // 游客请求同样带上，作为 DUID 失效时的兜底
       const sentProof = captchaFresh() ? captchaProof.proof : '';
       if (sentProof) {
         if (captchaProof.field) {
@@ -505,30 +761,22 @@ function makeProxy(host) {
         redirect: 'follow',
         signal: AbortSignal.timeout(15000), // 上游卡死时不要一直挂住前端
       });
-      absorbCookies(upstream);
+      if (!guest) absorbCookies(upstream); // 游客响应不污染账号会话 Cookie 罐
       const body = await upstream.text();
-      // 数据请求失败 / 风控拦截记入日志
-      if (!upstream.ok) {
-        logger.error('api_http_error', { url: target, status: upstream.status });
-      } else {
+      // 只记录上游 5xx；鉴权/风控/业务错误由页面提示，不写日志
+      if (!upstream.ok && upstream.status >= 500) {
+        logger.error('api_http_error', {
+          url: target.replace(/^https?:\/\/[^/]+/, '').slice(0, 200),
+          status: upstream.status,
+        });
+      } else if (upstream.ok) {
         try {
           const j = JSON.parse(body);
-          const ms = j.messageStatus ?? j.status;
-          if (ms !== undefined && ms !== 0 && !Array.isArray(j.data)) {
-            logger.warn('api_business_error', {
-              url: target.replace(/^https?:\/\/[^/]+/, ''),
-              messageStatus: ms,
-              message: String(j.message || '').slice(0, 100),
-              // 带了凭证仍被要求验证 = 凭证已失效，前端会重新弹滑块
-              proofSent: !!sentProof,
-            });
-            // 易盾 validate 实际有效期由服务端决定（十几分钟量级），
-            // 一旦被拒立刻作废，避免后续请求白带一个死凭证、还多一次静默重试
-            if (ms === 'err_request_captcha_v2' && sentProof) {
-              captchaProof = null;
-              try { fs.unlinkSync(CAPTCHA_FILE); } catch { /* 已不存在 */ }
-              logger.info('captcha_proof_rejected', {});
-            }
+          // 易盾 validate 实际有效期由服务端决定，一旦被拒立刻作废
+          if ((j.messageStatus ?? j.status) === 'err_request_captcha_v2' && sentProof) {
+            captchaProof = null;
+            try { fs.unlinkSync(CAPTCHA_FILE); } catch { /* 已不存在 */ }
+            logger.warn('captcha_proof_rejected', {});
           }
         } catch { /* 非 JSON 响应不记录 */ }
       }
@@ -537,7 +785,11 @@ function makeProxy(host) {
     } catch (err) {
       const timedOut = err.name === 'TimeoutError' || err.name === 'AbortError';
       console.error('[api]', target, err.message);
-      logger.error('api_request_failed', { url: target, error: err.message, timeout: timedOut });
+      logger.error('api_request_failed', {
+        url: target.replace(/^https?:\/\/[^/]+/, '').slice(0, 200),
+        error: err.message,
+        timeout: timedOut,
+      });
       res.status(timedOut ? 504 : 502).json({
         error: timedOut ? '上游请求超时，请稍后重试' : '上游请求失败',
         detail: err.message,
@@ -604,6 +856,9 @@ server.on('error', (err) => {
   }
   process.exit(1);
 });
+
+// 后台预热游客 DUID，减少第一次打开评论的等待；失败不影响启动
+setTimeout(() => { ensureGuestIdentity().catch(() => {}); }, 1500);
 
 // 未捕获异常也留痕，便于事后分析
 process.on('uncaughtException', (err) => {

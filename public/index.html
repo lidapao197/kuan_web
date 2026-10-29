@@ -12,7 +12,7 @@
     document.documentElement.setAttribute('data-theme', themes[Math.floor(Math.random() * themes.length)]);
   })();
 </script>
-<link rel="stylesheet" href="style.css?v=45">
+<link rel="stylesheet" href="style.css?v=49">
 </head>
 <body>
 <div class="bg-blob blob-a"></div>
@@ -33,6 +33,7 @@
       <button data-tab="apk"><i>📱</i>应用</button>
     </nav>
     <div class="sidebar-foot">
+    <button id="settings-btn" class="side-btn" title="设置">⚙️ 设置</button>
     <button id="account-btn" title="账号设置">
       <span class="avatar-wrap">
         <img id="account-avatar" alt="" hidden>
@@ -112,35 +113,6 @@
   </aside>
 </div>
 
-<!-- 整个页面右上角：主题色切换（固定在视口，不属于任何一栏） -->
-<div id="theme-dock">
-  <div id="theme-picker">
-    <button id="theme-btn" type="button" title="切换主题色" aria-label="切换主题色" aria-haspopup="true" aria-expanded="false">
-      <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M12 3a9 9 0 1 0 0 18h1.4a1.75 1.75 0 0 0 0-3.5h-.8a1.75 1.75 0 0 1 0-3.5h4.1A4.3 4.3 0 0 0 21 9.7C20.6 5.9 16.7 3 12 3Z"/>
-        <circle cx="7.5" cy="11.4" r="1.05" fill="currentColor" stroke="none"/>
-        <circle cx="9.7" cy="7.7" r="1.05" fill="currentColor" stroke="none"/>
-        <circle cx="14.1" cy="7" r="1.05" fill="currentColor" stroke="none"/>
-      </svg>
-    </button>
-    <div id="theme-menu" hidden>
-      <div class="theme-menu-head"><span>主题色</span><b id="theme-name">酷安绿</b></div>
-      <div class="theme-swatches">
-        <button type="button" class="theme-swatch" data-theme="green" style="--sw:#00a76e" title="酷安绿" aria-label="酷安绿"></button>
-        <button type="button" class="theme-swatch" data-theme="blue" style="--sw:#2f7ff0" title="晴空蓝" aria-label="晴空蓝"></button>
-        <button type="button" class="theme-swatch" data-theme="purple" style="--sw:#7c5cff" title="星河紫" aria-label="星河紫"></button>
-        <button type="button" class="theme-swatch" data-theme="teal" style="--sw:#0ea5a5" title="松石青" aria-label="松石青"></button>
-        <button type="button" class="theme-swatch" data-theme="orange" style="--sw:#f0862c" title="落日橙" aria-label="落日橙"></button>
-        <button type="button" class="theme-swatch" data-theme="pink" style="--sw:#e8558e" title="樱花粉" aria-label="樱花粉"></button>
-        <button type="button" class="theme-swatch theme-swatch-dark" data-theme="dark" style="--sw:#2b303a" title="暗黑" aria-label="暗黑主题">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg>
-          <span>暗黑</span>
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
-
 <!-- 图片灯箱预览 -->
 <div id="lightbox" class="lightbox" hidden>
   <div class="lightbox-mask"></div>
@@ -159,6 +131,6 @@
   </div>
 </div>
 
-<script src="app.js?v=49"></script>
+<script src="app.js?v=59"></script>
 </body>
 </html>

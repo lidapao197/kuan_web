@@ -184,6 +184,21 @@ function originalImg(url) {
   return url ? url.replace(/\.s\.jpg(?=\?|$)/, '') : url;
 }
 
+/** 是否动图（GIF）；列表/详情只加载静态首帧，点击后才在灯箱播放原图 */
+function isGifUrl(url) {
+  return /\.gif(?:$|[?#])/i.test(String(url || ''));
+}
+
+// 列表接口会把长文截成「... <a href="">查看更多</a>」，卡片自己会再加“查看更多”，
+// 先去掉接口自带的那份，避免出现两组省略号。
+const SERVER_MORE_RE = /\s*(?:\.{3}|…)\s*(?:<a\b[^>]*>\s*)?(?:查看更多|展开全文|阅读全文)\s*(?:<\/a>)?\s*$/i;
+function hasServerMore(html) {
+  return SERVER_MORE_RE.test(String(html || ''));
+}
+function stripServerMore(html) {
+  return String(html || '').replace(SERVER_MORE_RE, '');
+}
+
 /* ---------- 图片灯箱（原界面内预览，不跳转） ---------- */
 
 let lightboxUrls = [];
@@ -620,7 +635,7 @@ function feedBody(f, opts = {}) {
 
   const msg = document.createElement('div');
   msg.className = 'feed-msg';
-  msg.innerHTML = sanitizeMessage(f.message, hideTag);
+  msg.innerHTML = sanitizeMessage(opts.thumb ? stripServerMore(f.message) : f.message, hideTag);
   main.append(msg);
   row.append(main);
 
@@ -629,12 +644,41 @@ function feedBody(f, opts = {}) {
     const first = (f.picArr || [])[0];
     if (first) {
       const orig = originalImg(first);
+      const gif = isGifUrl(orig);
+      const wrap = document.createElement('div');
+      wrap.className = 'thumb-wrap' + (gif ? ' has-gif' : '');
       const th = document.createElement('img');
       th.className = 'feed-thumb';
       th.loading = 'lazy';
+      th.onload = () => {
+        // 竖图跟随左侧文字高度，避免正文很长时缩略图显得短一截
+        if (th.naturalHeight > th.naturalWidth * 1.05) wrap.classList.add('portrait');
+      };
       th.src = proxyImg(orig + '.s.jpg');
-      th.onerror = () => { th.onerror = null; th.src = proxyImg(orig); };
-      row.append(th);
+      th.onerror = () => {
+        if (gif) {
+          // 动图在列表里只显示静态首帧；首帧失败就占位，绝不回退到原 GIF 自动播放
+          th.classList.add('broken');
+          wrap.classList.add('no-preview');
+          return;
+        }
+        th.onerror = null;
+        th.src = proxyImg(orig);
+      };
+      wrap.append(th);
+      if (gif) {
+        const badge = document.createElement('span');
+        badge.className = 'gif-badge';
+        badge.textContent = 'GIF';
+        wrap.append(badge);
+        wrap.title = '点击播放动图';
+        wrap.onclick = (e) => {
+          e.stopPropagation();
+          const urls = (f.picArr || []).map(p => proxyImg(originalImg(p))).filter(Boolean);
+          if (urls.length) openLightbox(urls, 0);
+        };
+      }
+      row.append(wrap);
     }
     el.append(row);
     return el;
@@ -650,29 +694,46 @@ function feedBody(f, opts = {}) {
     box.className = 'feed-pics ' + (pics.length === 1 ? 'n1' : 'n3');
     for (let i = 0; i < pics.length; i++) {
       const orig = originalImg(pics[i]);
+      const gif = isGifUrl(orig);
+      const wrap = document.createElement('div');
+      wrap.className = 'pic-wrap' + (gif ? ' has-gif' : '');
+
       const im = document.createElement('img');
       im.loading = 'lazy';
       im.src = proxyImg(orig + '.s.jpg');
-      im.onerror = () => { im.onerror = null; im.src = proxyImg(orig); };
+      im.onerror = () => {
+        if (gif) {
+          // 动图只显示静态首帧；加载失败用占位，不自动加载原 GIF
+          im.classList.add('broken');
+          wrap.classList.add('no-preview');
+          return;
+        }
+        im.onerror = null;
+        im.src = proxyImg(orig);
+      };
       im.dataset.orig = proxyImg(orig);
       im.onclick = (e) => {
         e.stopPropagation();
         const urls = [...box.querySelectorAll('img')].map(x => x.dataset.orig);
         openLightbox(urls, Math.max(0, urls.indexOf(im.dataset.orig)));
       };
+      wrap.append(im);
+      if (gif) {
+        const badge = document.createElement('span');
+        badge.className = 'gif-badge';
+        badge.textContent = 'GIF';
+        wrap.append(badge);
+        wrap.title = '点击播放动图';
+      }
       if (i === picCap - 1 && overflow > 0) {
         // 最后一张带 +N 蒙层，点击进入详情查看全部图片
-        const wrap = document.createElement('div');
-        wrap.className = 'pic-wrap';
         const more = document.createElement('div');
         more.className = 'pic-more';
         more.textContent = '+' + overflow;
         more.onclick = (e) => { e.stopPropagation(); showDetail(f); };
-        wrap.append(im, more);
-        box.append(wrap);
-      } else {
-        box.append(im);
+        wrap.append(more);
       }
+      box.append(wrap);
     }
     el.append(box);
   }
@@ -686,6 +747,13 @@ function feedNode(f) {
 
   const msgEl = el.querySelector('.feed-msg');
   msgEl.classList.add('clamp');
+  const serverTruncated = hasServerMore(f.message); // 接口自带“查看更多”时也要给入口
+
+  // 包一层，让“查看更多”可以叠在最后一行右侧，而不是另起一行
+  const msgWrap = document.createElement('div');
+  msgWrap.className = 'feed-msg-wrap';
+  msgEl.before(msgWrap);
+  msgWrap.append(msgEl);
 
   const foot = document.createElement('div');
   foot.className = 'feed-foot';
@@ -698,14 +766,14 @@ function feedNode(f) {
 
   el.onclick = () => showDetail(f);
 
-  // 正文超过 5 行时显示"...查看更多"，点击打开右侧详情
+  // 正文超过 5 行（或接口已截断）时显示“查看更多”，点击打开右侧详情
   requestAnimationFrame(() => {
-    if (msgEl.scrollHeight > msgEl.clientHeight + 2) {
+    if (serverTruncated || msgEl.scrollHeight > msgEl.clientHeight + 2) {
       const more = document.createElement('span');
       more.className = 'more-link';
-      more.textContent = '...查看更多';
+      more.textContent = '查看更多';
       more.onclick = (e) => { e.stopPropagation(); showDetail(f); };
-      msgEl.after(more);
+      msgWrap.append(more);
     }
   });
   return el;
@@ -749,7 +817,7 @@ function topicNode(t) {
     if (fb.disabled) return;
     fb.disabled = true;
     try {
-      paint(await toggleTopicFollow(t.title));
+      paint(await toggleTopicFollow(t.title, t));
       renderPinnedTopics(); // 置顶区随关注变化
     } catch (err) {
       fb.textContent = '操作失败';
@@ -759,6 +827,8 @@ function topicNode(t) {
     }
   };
   el.append(fb);
+  // 关注列表异步加载完成后，用来同步列表卡片的按钮状态
+  el._syncFollow = () => paint(isTopicFollowed(t.title));
 
   el.onclick = () => openTopicFeed(t.title || '');
   return el;
@@ -775,7 +845,9 @@ let apkFollowLoaded = false;
 async function loadFollowedApks(force = false) {
   if (apkFollowLoaded && !force) return followedApks;
   try {
-    const res = await fetch('/api/v6/user/apkFollowList?page=1');
+    const acc = await getAccountInfo();
+    const url = acc.configured ? '/api/v6/user/apkFollowList?page=1' : '/follows/apks';
+    const res = await fetch(url);
     const json = await res.json();
     followedApks = Array.isArray(json.data) ? json.data.filter(x => x && (x.id || x.apkname)) : [];
     apkFollowLoaded = true;
@@ -789,16 +861,29 @@ function isApkFollowed(a) {
   return followedApks.some(x => String(x.id) === id || (pkg && apkPkg(x) === pkg));
 }
 
-/** 关注 / 取消关注应用：调酷安接口（需要数字 id），成功后刷新账号列表 */
+/** 关注 / 取消关注应用：登录走酷安接口，未登录写本地 follows.json */
 async function toggleApkFollow(a) {
-  const id = apkId(a);
-  if (!id) throw new Error('缺少应用 id');
   const on = isApkFollowed(a);
-  const res = await fetch('/api/v6/apk/' + (on ? 'unFollow' : 'follow') + '?id=' + encodeURIComponent(id),
-    { method: 'POST' });
+  const acc = await getAccountInfo();
+  if (acc.configured) {
+    const id = apkId(a);
+    if (!id) throw new Error('缺少应用 id');
+    const res = await fetch('/api/v6/apk/' + (on ? 'unFollow' : 'follow') + '?id=' + encodeURIComponent(id),
+      { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (!json.data || typeof json.data !== 'object') throw new Error(json.message || '操作失败');
+    await loadFollowedApks(true);
+    return !on;
+  }
+  const res = await fetch('/follows/apk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ follow: !on, app: a }),
+  });
   const json = await res.json().catch(() => ({}));
-  if (!json.data || typeof json.data !== 'object') throw new Error(json.message || '操作失败');
-  await loadFollowedApks(true);
+  if (!res.ok) throw new Error(json.error || '操作失败');
+  followedApks = Array.isArray(json.data) ? json.data.filter(x => x && (x.id || x.apkname)) : [];
+  apkFollowLoaded = true;
   return !on;
 }
 
@@ -809,11 +894,15 @@ async function renderPinnedApks() {
   if (!onApkList) { box.innerHTML = ''; return; }
   await loadFollowedApks();
   if (!(currentView.kind === 'list' && currentView.tab === 'apk')) { box.innerHTML = ''; return; }
+  // 关注列表晚于列表卡片到达时，补刷一遍按钮状态
+  document.querySelectorAll('#content .apk-card').forEach(el => {
+    if (el._syncFollow) el._syncFollow();
+  });
   box.innerHTML = '';
   if (!followedApks.length) return;
   const label = document.createElement('div');
   label.className = 'section-title';
-  label.textContent = '我关注的应用';
+  label.textContent = accountInfo && !accountInfo.configured ? '我关注的应用（本地）' : '我关注的应用';
   box.append(label);
   for (const it of followedApks) box.append(apkNode(it));
 }
@@ -874,6 +963,7 @@ function apkNode(a) {
   };
 
   el.append(logo, main, follow);
+  el._syncFollow = () => paint(isApkFollowed(a));
   el.onclick = () => openApkReplies(a);
   return el;
 }
@@ -1032,6 +1122,7 @@ const COMMENT_PARAMS = 'discussMode=0&feedType=feed&blockStatus=0&fromFeedAuthor
 let detailFeedId = null;
 let commentPage = 1;
 let commentLoading = false;
+let commentSeq = 0; // 切换动态时作废旧请求，避免旧评论串到新详情里
 
 // 列表里的长动态是服务端截断版（末尾带"查看更多"），详情改用 detail 接口的全文
 const TRUNCATED_RE = /查看更多|展开全文|阅读全文/;
@@ -1086,8 +1177,10 @@ async function showDetail(f) {
   box.append(cbox);
 
   commentPage = 1;
-  commentMode = 'hot';
-  await loadComments(f, 0, 'hot');
+  commentSeq++;
+  commentLoading = false; // 允许新动态的评论请求开始，旧请求会自动作废
+  // 先直接加载完整评论；被风控要求验证时不自动弹滑块，改为显示入口按钮
+  await loadComments(f, 0, false);
 }
 
 /** 右栏默认占位：未选择动态时显示 */
@@ -1112,32 +1205,30 @@ function showDetailPlaceholder() {
   box.append(wrap);
 }
 
-// 评论两种来源（参考 FuckCoolapkFeeds 的做法）：
-//   hot  —— /v6/feed/hotReplyList：免登录、免验证码，但只给"热门评论"（一般就 1 页）
-//   full —— /v6/feed/replyList：完整评论，受风控保护，需要滑块凭证
-let commentMode = 'hot';
-
-/** 没有热门评论时的入口：点了才加载完整评论（这一步才可能弹滑块） */
+/** 只有被风控要求验证时才显示：点击后再弹滑块并重试 */
 function renderCommentGate(f, cbox) {
   cbox.innerHTML = '';
+  const note = document.createElement('div');
+  note.className = 'comment-empty';
+  note.textContent = '评论需要完成验证后才能查看';
   const gate = document.createElement('button');
   gate.className = 'comment-gate';
   gate.textContent = f.replynum ? `查看评论（共 ${f.replynum} 条）` : '查看评论';
   gate.onclick = () => {
-    commentMode = 'full';
     commentPage = 1;
     cbox.innerHTML = '';
-    loadComments(f, 0, 'full');
+    loadComments(f, 0, true);
   };
-  cbox.append(gate);
+  cbox.append(note, gate);
 }
 
-async function loadComments(f, attempt = 0, mode = commentMode) {
+// allowCaptcha=false：首次自动加载，只在被要求验证时显示入口按钮，不自动弹滑块
+async function loadComments(f, attempt = 0, allowCaptcha = true) {
   if (commentLoading || detailFeedId !== f.id) return;
   commentLoading = true;
+  const seq = ++commentSeq;
   const cbox = $('#comment-box');
   cbox.querySelector('.comment-more')?.remove();
-  cbox.querySelector('.comment-hint')?.remove();
   let tip = cbox.querySelector('.comment-empty');
   if (!tip) {
     tip = document.createElement('div');
@@ -1146,36 +1237,36 @@ async function loadComments(f, attempt = 0, mode = commentMode) {
     cbox.append(tip);
   }
   try {
-    const url = mode === 'hot'
-      ? `/api2/v6/feed/hotReplyList?id=${encodeURIComponent(f.id)}&page=1&discussMode=0`
-      : `/api2/v6/feed/replyList?id=${encodeURIComponent(f.id)}&page=${commentPage}&${COMMENT_PARAMS}`;
+    const url = `/api2/v6/feed/replyList?id=${encodeURIComponent(f.id)}&page=${commentPage}&${COMMENT_PARAMS}`;
     const res = await fetch(url);
     const json = await res.json();
+    if (seq !== commentSeq || detailFeedId !== f.id) return; // 详情已切换，丢弃旧响应
     if (!Array.isArray(json.data)) {
-      // 风控要求人机验证：用接口下发的 captchaId 弹滑块，通过后凭证存后端并自动重试
       const challenge = parseCaptchaChallenge(json);
+      if (challenge && !allowCaptcha) {
+        // 需要滑块：不自动弹，交给用户点「查看评论」
+        commentLoading = false;
+        tip.remove();
+        renderCommentGate(f, cbox);
+        return;
+      }
       if (challenge && attempt < 3) {
         if (attempt === 0) {
           // 先用已保存的凭证静默重试一次，可能仍然有效
           const st = await fetch('/captcha/status').then(r => r.json()).catch(() => ({ has: false }));
+          if (seq !== commentSeq || detailFeedId !== f.id) return;
           if (st.has) {
             commentLoading = false;
-            return loadComments(f, attempt + 1, mode);
+            return loadComments(f, attempt + 1, allowCaptcha);
           }
         }
         tip.textContent = '酷安要求人机验证，请完成滑块（通过后自动加载评论）…';
         await solveCaptcha(challenge);
+        if (seq !== commentSeq || detailFeedId !== f.id) return;
         commentLoading = false;
-        return loadComments(f, attempt + 1, mode);
+        return loadComments(f, attempt + 1, allowCaptcha);
       }
       throw new Error(json.message || '加载失败');
-    }
-    // 没有热门评论时不再自动走完整列表（会立刻弹滑块），改为显示一个入口按钮
-    if (mode === 'hot' && !json.data.length) {
-      commentLoading = false;
-      tip.remove();
-      renderCommentGate(f, cbox);
-      return;
     }
     tip.remove();
     if (!json.data.length && commentPage === 1) {
@@ -1185,32 +1276,16 @@ async function loadComments(f, attempt = 0, mode = commentMode) {
       cbox.append(empty);
     }
     for (const r of json.data) cbox.append(replyNode(r, false));
-    if (mode === 'hot') {
-      // 热门评论只覆盖一部分，给一个"查看全部"入口（点它才走验证码）
-      const hint = document.createElement('div');
-      hint.className = 'comment-hint';
-      const txt = document.createElement('span');
-      txt.textContent = '以上为热门评论' + (f.replynum ? `（共 ${f.replynum} 条）` : '');
-      const btn = document.createElement('button');
-      btn.textContent = '查看全部评论';
-      btn.onclick = () => {
-        commentMode = 'full';
-        commentPage = 1;
-        hint.remove();
-        cbox.querySelectorAll('.reply-item').forEach((n) => n.remove());
-        loadComments(f, 0, 'full');
-      };
-      hint.append(txt, btn);
-      cbox.append(hint);
-    } else if (json.data.length >= 20) {
+    if (json.data.length >= 20) {
       const more = document.createElement('button');
       more.className = 'comment-more';
       more.textContent = '加载更多评论';
-      more.onclick = () => { loadComments(f, 0, 'full'); }; // commentPage 已在成功后自增
+      more.onclick = () => { loadComments(f, 0, true); }; // commentPage 已在成功后自增
       cbox.append(more);
     }
     commentPage++;
   } catch (err) {
+    if (seq !== commentSeq || detailFeedId !== f.id) return;
     tip.innerHTML = '';
     tip.textContent = '暂时无法获取评论：' + err.message + '。';
     const a = document.createElement('a');
@@ -1220,7 +1295,7 @@ async function loadComments(f, attempt = 0, mode = commentMode) {
     a.textContent = ' ↗ 打开原文查看评论';
     tip.append(a);
   }
-  commentLoading = false;
+  if (seq === commentSeq) commentLoading = false;
 }
 
 function replyNode(r, nested) {
@@ -1272,7 +1347,35 @@ function closeDetail() {
   showDetailPlaceholder();
 }
 
-/* ---------- 话题关注（以账号为准，不写本地） ---------- */
+/* ---------- 登录状态与关注列表来源 ---------- */
+
+let accountInfo = null;
+
+/** 记录当前登录状态；登录/退出/切换账号时清空关注列表缓存 */
+function setAccountInfo(st) {
+  const prev = accountInfo && accountInfo.configured ? 'uid:' + accountInfo.uid : 'guest';
+  const next = st && st.configured ? 'uid:' + st.uid : 'guest';
+  accountInfo = st || { configured: false };
+  if (prev !== next) {
+    followedTopics = [];
+    followedLoaded = false;
+    followedApks = [];
+    apkFollowLoaded = false;
+  }
+}
+
+/** 当前登录状态（首次调用时请求 /account） */
+async function getAccountInfo() {
+  if (accountInfo) return accountInfo;
+  try {
+    setAccountInfo(await (await fetch('/account')).json());
+  } catch {
+    setAccountInfo({ configured: false });
+  }
+  return accountInfo;
+}
+
+/* ---------- 话题关注（未登录时写本地 JSON） ---------- */
 
 const topicsCache = new Map(); // title -> 话题数据
 
@@ -1282,7 +1385,9 @@ let followedLoaded = false;
 async function loadFollowedTopics(force = false) {
   if (followedLoaded && !force) return followedTopics;
   try {
-    const res = await fetch('/api/v6/user/followTagList?page=1');
+    const acc = await getAccountInfo();
+    const url = acc.configured ? '/api/v6/user/followTagList?page=1' : '/follows/topics';
+    const res = await fetch(url);
     const json = await res.json();
     const list = Array.isArray(json.data) ? json.data.filter(x => x && x.title) : [];
     followedTopics = list;
@@ -1295,15 +1400,32 @@ function isTopicFollowed(title) {
   return followedTopics.some(x => x.title === title);
 }
 
-/** 关注 / 取消关注：调酷安接口，成功后刷新账号关注列表 */
-async function toggleTopicFollow(title) {
+/** 关注 / 取消关注：登录走酷安接口，未登录写本地 follows.json */
+async function toggleTopicFollow(title, meta) {
   const on = isTopicFollowed(title);
-  const url = '/api/v6/feed/' + (on ? 'unFollowTag' : 'followTag') +
-    '?tag=' + encodeURIComponent(title);
-  const res = await fetch(url, { method: 'POST' });
+  const acc = await getAccountInfo();
+  if (acc.configured) {
+    const url = '/api/v6/feed/' + (on ? 'unFollowTag' : 'followTag') +
+      '?tag=' + encodeURIComponent(title);
+    const res = await fetch(url, { method: 'POST' });
+    const json = await res.json().catch(() => ({}));
+    if (json.status !== 1) throw new Error(json.message || '操作失败');
+    await loadFollowedTopics(true);
+    return !on;
+  }
+  const res = await fetch('/follows/topic', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title,
+      follow: !on,
+      topic: meta || topicsCache.get(title) || { title },
+    }),
+  });
   const json = await res.json().catch(() => ({}));
-  if (json.status !== 1) throw new Error(json.message || '操作失败');
-  await loadFollowedTopics(true);
+  if (!res.ok) throw new Error(json.error || '操作失败');
+  followedTopics = Array.isArray(json.data) ? json.data : [];
+  followedLoaded = true;
   return !on;
 }
 
@@ -1313,11 +1435,15 @@ async function renderPinnedTopics() {
   if (currentView.kind !== 'topics') { box.innerHTML = ''; return; }
   await loadFollowedTopics();
   if (currentView.kind !== 'topics') { box.innerHTML = ''; return; }
+  // 关注列表晚于列表卡片到达时，补刷一遍按钮状态
+  document.querySelectorAll('#content .topic-card').forEach(el => {
+    if (el._syncFollow) el._syncFollow();
+  });
   box.innerHTML = '';
   if (!followedTopics.length) return;
   const label = document.createElement('div');
   label.className = 'section-title';
-  label.textContent = '我关注的话题';
+  label.textContent = accountInfo && !accountInfo.configured ? '我关注的话题（本地）' : '我关注的话题';
   box.append(label);
   for (const t of followedTopics) box.append(topicNode(t));
 }
@@ -1428,7 +1554,7 @@ function renderPicCats(activeTag) {
   }
 }
 
-/* ---------- 主题色切换（右上角） ---------- */
+/* ---------- 设置（主题色） ---------- */
 
 const THEMES = {
   green: '酷安绿',
@@ -1439,15 +1565,23 @@ const THEMES = {
   pink: '樱花粉',
   dark: '暗黑',
 };
-
-const themeBtn = $('#theme-btn');
-const themeMenu = $('#theme-menu');
+const THEME_SWATCHES = {
+  green: '#00a76e',
+  blue: '#2f7ff0',
+  purple: '#7c5cff',
+  teal: '#0ea5a5',
+  orange: '#f0862c',
+  pink: '#e8558e',
+  dark: '#2b303a',
+};
 
 /** 应用主题（不做持久化：每次进入由 index.html 随机选色） */
 function applyTheme(name) {
   const theme = THEMES[name] ? name : 'green';
   document.documentElement.setAttribute('data-theme', theme);
-  $('#theme-name').textContent = THEMES[theme];
+  document.querySelectorAll('.theme-current-name').forEach(el => {
+    el.textContent = THEMES[theme];
+  });
   document.querySelectorAll('.theme-swatch').forEach(b => {
     const on = b.dataset.theme === theme;
     b.classList.toggle('active', on);
@@ -1455,34 +1589,59 @@ function applyTheme(name) {
   });
 }
 
-function setThemeMenu(open) {
-  themeMenu.hidden = !open;
-  themeBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+/** 侧边栏「设置」弹窗：目前包含主题色 */
+function openSettingsModal() {
+  const body = document.createElement('div');
+  const h2 = document.createElement('h2');
+  h2.textContent = '设置';
+
+  const sec = document.createElement('div');
+  sec.className = 'settings-section';
+  const head = document.createElement('div');
+  head.className = 'settings-head';
+  const title = document.createElement('span');
+  title.textContent = '主题色';
+  const current = document.createElement('b');
+  current.className = 'theme-current-name';
+  current.textContent = THEMES[document.documentElement.getAttribute('data-theme')] || THEMES.green;
+  head.append(title, current);
+
+  const hint = document.createElement('div');
+  hint.className = 'account-hint';
+  hint.textContent = '每次打开页面会随机一套彩色主题；这里的选择只在当前页面内生效。';
+
+  const grid = document.createElement('div');
+  grid.className = 'theme-swatches';
+  for (const [key, label] of Object.entries(THEMES)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'theme-swatch' + (key === 'dark' ? ' theme-swatch-dark' : '');
+    b.dataset.theme = key;
+    b.title = label;
+    b.setAttribute('aria-label', label);
+    b.style.setProperty('--sw', THEME_SWATCHES[key]);
+    if (key === 'dark') {
+      b.innerHTML =
+        '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
+        'stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg><span>暗黑</span>';
+    }
+    b.onclick = () => applyTheme(key);
+    grid.append(b);
+  }
+
+  sec.append(head, hint, grid);
+  body.append(h2, sec);
+  showModal('');
+  $('#modal-content').append(body);
+  // 同步当前主题的选中态（弹窗里的 swatch 是动态创建的）
+  applyTheme(document.documentElement.getAttribute('data-theme'));
 }
 
-themeBtn.onclick = (e) => {
-  e.stopPropagation();
-  setThemeMenu(themeMenu.hidden);
-};
-
-document.querySelectorAll('.theme-swatch').forEach(b => {
-  b.onclick = () => {
-    applyTheme(b.dataset.theme);
-    setThemeMenu(false);
-  };
-});
-
-// 点击面板外部 / 按 Esc 收起
-document.addEventListener('click', (e) => {
-  if (!themeMenu.hidden && !e.target.closest('#theme-picker')) setThemeMenu(false);
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !themeMenu.hidden) setThemeMenu(false);
-});
-
-// 首屏主题已由 index.html 内联脚本随机决定，这里同步面板的选中态
+// 首屏主题已由 index.html 内联脚本随机决定，这里同步选中态
 applyTheme(document.documentElement.getAttribute('data-theme'));
 
+$('#settings-btn').onclick = openSettingsModal;
 $('#account-btn').onclick = openAccountModal;
 
 /* ---------- 应用详情弹窗 ---------- */
@@ -1588,12 +1747,16 @@ function setLoginMsg(text, ok = false) {
 }
 
 /** 登录成功后的统一收尾：收起登录框、更新头像、刷新列表 */
-function afterLogin(msg) {
+async function afterLogin(msg) {
   closeLoginFrame();
   setLoginMsg(msg || '登录成功，凭证已保存', true);
-  updateAccountBtn();
+  await updateAccountBtn(); // 先同步登录状态，关注列表才会切回账号来源
   showDetailPlaceholder();
   load(true);
+  // 登录成功后刷新账号弹窗，更新「当前账号」和「最近登录」列表
+  if (!$('#modal').hidden) {
+    setTimeout(() => { if (!$('#modal').hidden) openAccountModal(); }, 900);
+  }
 }
 
 /** 从整段 Cookie（或仅 token/uid 片段）里识别凭证 */
@@ -1648,11 +1811,17 @@ async function openAccountModal() {
   closeLoginFrame(); // 重新打开时清掉上一次的登录框与轮询
   showModal('<div class="status">加载中…</div>');
   let status = { configured: false };
+  let recent = { activeUid: '', accounts: [] };
   try {
-    const res = await fetch('/account');
-    status = await res.json();
+    const [account, accounts] = await Promise.all([
+      fetch('/account').then(r => r.json()).catch(() => ({ configured: false })),
+      fetch('/accounts').then(r => r.json()).catch(() => ({ activeUid: '', accounts: [] })),
+    ]);
+    status = account;
+    recent = accounts;
   } catch { /* 保持未配置 */ }
   if ($('#modal').hidden) return; // 用户已关闭弹窗，不再渲染
+  setAccountInfo(status);
 
   const body = document.createElement('div');
   const h2 = document.createElement('h2');
@@ -1662,9 +1831,98 @@ async function openAccountModal() {
   const st = document.createElement('div');
   st.className = 'account-status';
   st.textContent = status.configured
-    ? `已配置：uid=${status.uid}，用户名=${status.username || '（空）'}，token 尾号 ${status.tokenTail}`
-    : '未配置。配置后可查看动态评论（匿名会话评论接口受酷安风控限制）。';
-  body.append(st);
+    ? `已登录：uid=${status.uid}，用户名=${status.username || '（空）'}，token 尾号 ${status.tokenTail}`
+    : '未登录。评论与内容可直接浏览；关注话题 / 应用会保存在本机。';
+
+  // 当前会话 + 退出登录（只清会话，账号仍留在最近登录里）
+  const session = document.createElement('div');
+  session.className = 'account-session';
+  session.append(st);
+  let logoutBtn = null;
+  if (status.configured) {
+    logoutBtn = document.createElement('button');
+    logoutBtn.id = 'account-logout';
+    logoutBtn.className = 'side-btn';
+    logoutBtn.textContent = '退出登录';
+    session.append(logoutBtn);
+  }
+  body.append(session);
+
+  // 最近登录：点击即可切换回对应账号
+  const recentSec = document.createElement('div');
+  recentSec.className = 'recent-section';
+  const recentTitle = document.createElement('h3');
+  recentTitle.textContent = '最近登录';
+  recentSec.append(recentTitle);
+  const recentMsg = document.createElement('div');
+  recentMsg.className = 'login-msg';
+
+  if (!recent.accounts || !recent.accounts.length) {
+    const empty = document.createElement('div');
+    empty.className = 'account-hint';
+    empty.textContent = '暂无最近登录账号。完成一次登录后会保存在这里，退出登录后也能一键切回。';
+    recentSec.append(empty);
+  } else {
+    const list = document.createElement('div');
+    list.className = 'recent-list';
+    for (const acc of recent.accounts) {
+      const isActive = status.configured && String(acc.uid) === String(status.uid);
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'recent-account' + (isActive ? ' active' : '');
+      item.title = isActive ? '当前账号' : `切换到 ${acc.username || acc.uid}`;
+
+      const av = document.createElement('span');
+      av.className = 'recent-avatar';
+      av.textContent = (acc.username || '酷').trim().charAt(0).toUpperCase();
+
+      const info = document.createElement('span');
+      info.className = 'recent-info';
+      const nm = document.createElement('span');
+      nm.className = 'recent-name';
+      nm.textContent = acc.username || ('UID ' + acc.uid);
+      const meta = document.createElement('span');
+      meta.className = 'recent-meta';
+      const used = acc.lastUsedAt ? new Date(acc.lastUsedAt) : null;
+      const usedText = used
+        ? `${used.getMonth() + 1}月${used.getDate()}日`
+        : '';
+      meta.textContent = ['UID ' + acc.uid, acc.deviceModel, usedText].filter(Boolean).join(' · ');
+      info.append(nm, meta);
+
+      item.append(av, info);
+      if (isActive) {
+        const badge = document.createElement('span');
+        badge.className = 'recent-badge';
+        badge.textContent = '当前';
+        item.append(badge);
+        item.disabled = true;
+      } else {
+        item.onclick = async () => {
+          item.disabled = true;
+          try {
+            const res = await fetch('/accounts/activate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uid: acc.uid }),
+            });
+            const j = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(j.error || '切换失败');
+            closeModal();
+            await updateAccountBtn();
+            showDetailPlaceholder();
+            load(true);
+          } catch (err) {
+            recentMsg.textContent = '切换失败：' + err.message;
+            item.disabled = false;
+          }
+        };
+      }
+      list.append(item);
+    }
+    recentSec.append(list, recentMsg);
+  }
+  body.append(recentSec);
 
   // ---- 登录（官网 + Cookie 粘贴免手填） ----
   const loginSec = document.createElement('div');
@@ -1774,7 +2032,8 @@ async function openAccountModal() {
   save.textContent = '保存并刷新';
   const clear = document.createElement('button');
   clear.id = 'account-clear';
-  clear.textContent = '清除配置';
+  clear.textContent = '删除账号';
+  clear.hidden = !status.configured; // 未登录时没有可删除的当前账号
   actions.append(save, clear);
 
   const manualMsg = document.createElement('div');
@@ -1834,7 +2093,7 @@ async function openAccountModal() {
         ua: '',
       });
       closeModal();
-      updateAccountBtn();
+      await updateAccountBtn();
       showDetailPlaceholder();
       load(true);
     } catch (err) {
@@ -1863,7 +2122,7 @@ async function openAccountModal() {
         deviceModel: inputs.deviceModel.value.trim(),
       });
       closeModal();
-      updateAccountBtn();
+      await updateAccountBtn();
       showDetailPlaceholder();
       load(true);
     } catch (err) {
@@ -1873,13 +2132,27 @@ async function openAccountModal() {
     }
   };
 
+  if (logoutBtn) {
+    logoutBtn.onclick = async () => {
+      logoutBtn.disabled = true;
+      logoutBtn.textContent = '退出中…';
+      await fetch('/logout', { method: 'POST' }).catch(() => {});
+      await updateAccountBtn();
+      showDetailPlaceholder();
+      load(true);
+      openAccountModal(); // 重新渲染：未登录 + 最近登录列表
+    };
+  }
+
   clear.onclick = async () => {
-    if (!confirm('确定清除本机保存的账号凭证？')) return;
+    if (!confirm('删除当前账号？会同时从最近登录列表中移除，之后需要重新登录。')) return;
     clear.disabled = true;
     await fetch('/account', { method: 'DELETE' }).catch(() => {});
     closeLoginFrame();
-    updateAccountBtn();
-    openAccountModal(); // 重新渲染为未配置状态
+    await updateAccountBtn();
+    showDetailPlaceholder();
+    load(true);
+    openAccountModal(); // 重新渲染为未登录状态
   };
 
   showModal('');
@@ -1895,6 +2168,7 @@ async function updateAccountBtn() {
   try {
     const res = await fetch('/account');
     const st = await res.json();
+    setAccountInfo(st);
     if (!st.configured) {
       name.textContent = '账号设置';
       setAccountAvatar('');
